@@ -1,0 +1,13 @@
+graph TD
+    User([User Request]) --> Core[Core Orchestrator Agent]
+    
+    Core -->|1. Request Insights| Intel[Market Intelligence Agent]
+    Intel -->|2. Industry & Competitor Data| Core
+    
+    Core -->|3. Delegate SWOT & Strategy| Strat[Business Strategy Agent]
+    Strat -->|4. Strategic Pillars| Core
+    
+    Core -->|5. Outline Execution Roadmap| Growth[Growth Strategist Agent]
+    Growth -->|6. Phases & KPIs| Core
+    
+    Core --> Output([Executive Action Plan])

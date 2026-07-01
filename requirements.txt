@@ -1,0 +1,17 @@
+# Google Agent Development Kit (ADK)
+google-adk>=0.1.0
+
+# Official Google Gen AI Python SDK
+google-genai>=0.1.0
+
+# Core Data Validation & Settings Management
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Environment Configuration
+python-dotenv>=1.0.0
+
+# Testing and Code Quality
+pytest>=8.0.0
+flake8>=7.0.0
+black>=24.0.0
