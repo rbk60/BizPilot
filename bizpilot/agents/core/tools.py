@@ -1,99 +1,99 @@
-# Updated core tools with real implementations
+"""
+bizpilot/agents/core/tools.py
+
+Core orchestration tools for BizPilot.
+
+Architecture:
+  detect_language()         — Zero-cost heuristic (no API call)
+  analyze_business_request() — Zero-cost heuristic (no API call)
+  compile_executive_report() — Used by ADK agent tool calling
+  orchestrate()             — Single Gemini call generates entire report
+
+Key fixes applied:
+  - detect_language() and analyze_business_request() no longer call Gemini
+    (they were consuming 2 of the 5 API calls per request for free-tier users)
+  - orchestrate() now uses ONE Gemini call instead of 5
+  - All hardcoded HR-SaaS fallback data removed
+  - Fallback on quota error returns honest error, not fake report
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 import re
+import pathlib
 from typing import Any, Dict, List
-
 from abc import ABC, abstractmethod
 
-from bizpilot.agents.intelligence.agent import run_intelligence
-from bizpilot.agents.growth.agent import run_growth
-from bizpilot.agents.strategy.agent import run_strategy
 from bizpilot.schemas import BusinessRequest, ExecutionPlan, ExecutiveReport
 from bizpilot.security import validate_api_key
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Helper functions
+# Language detection — zero-cost heuristics, no API call
 # ---------------------------------------------------------------------------
 
-def _detect_language_arabic(text: str) -> bool:
+def _detect_arabic(text: str) -> bool:
     return bool(re.search(r"[\u0600-\u06FF]", text))
 
-def _detect_language_chinese(text: str) -> bool:
+def _detect_chinese(text: str) -> bool:
     return bool(re.search(r"[\u4E00-\u9FFF]", text))
 
-def _detect_language_japanese(text: str) -> bool:
+def _detect_japanese(text: str) -> bool:
     return bool(re.search(r"[\u3040-\u30FF]", text))
 
-def _detect_language_korean(text: str) -> bool:
+def _detect_korean(text: str) -> bool:
     return bool(re.search(r"[\uAC00-\uD7AF]", text))
 
-# Simple keyword‑based heuristics for European languages used in the test suite
-_FRENCH_KEYWORDS = {"nous", "aider", "santé", "vous", "aidez", "développer", "entreprise"}
-_SPANISH_KEYWORDS = {"tenemos", "estrategia", "clientes", "empresa", "nosotros", "ayudar"}
+_FRENCH_MARKERS = {
+    "bonjour", "salut", "merci", "vous", "nous", "entreprise",
+    "aider", "stratégie", "marché", "client", "produit",
+}
+_DARIJA_MARKERS = {
+    "wesh", "labès", "labes", "salam", "ahla", "marhba",
+    "tnajm", "tfaserli", "kifek", "tounsi", "yasser", "bahi",
+    "saha", "baraka", "mrigel", "chkoun", "chnoua", "wqt",
+}
 
 def detect_language(text: str) -> dict:
-    """Detect language using Gemini LLM.
-
-    The function first attempts a Gemini model call to infer the language of the
-    supplied *text*.  If the Gemini request fails (e.g., network error, missing
-    API key), it gracefully falls back to the lightweight heuristic implementation
-    that was previously used.
-    """
-    # Import inside function to avoid import‑time side effects if library missing
-    try:
-        import google.generativeai as genai
-        from bizpilot.config.settings import settings
-        # Initialise the Gemini client once per call
-        if not getattr(genai, "_configured", False):
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-            genai._configured = True
-        model_name = settings.DEFAULT_LLM_MODEL
-        model = genai.GenerativeModel(model_name)
-        prompt = (
-            "You are a language detection assistant. Identify the primary language "
-            "of the following text and return a JSON object with two keys: "
-            "'language_code' (BCP‑47) and 'language_name'. Only output the JSON.\n"
-            f"Text: '''{text}'''"
-        )
-        response = model.generate_content(prompt)
-        import json
-        result = json.loads(response.text)
-        if isinstance(result, dict) and "language_code" in result and "language_name" in result:
-            return result
-    except Exception as e:
-        logger.warning(f"Gemini language detection failed ({e}); falling back to heuristics")
-    # ---------------------------------------------------------------------
-    # Fallback heuristic (same as original implementation)
-    # ---------------------------------------------------------------------
-    lowered = text.lower()
-    if _detect_language_arabic(text):
+    """Detect language using zero-cost heuristics. Never calls Gemini."""
+    if _detect_arabic(text):
         return {"language_code": "ar", "language_name": "Arabic"}
-    if _detect_language_chinese(text):
+    if _detect_chinese(text):
         return {"language_code": "zh", "language_name": "Chinese"}
-    if _detect_language_japanese(text):
+    if _detect_japanese(text):
         return {"language_code": "ja", "language_name": "Japanese"}
-    if _detect_language_korean(text):
+    if _detect_korean(text):
         return {"language_code": "ko", "language_name": "Korean"}
-    if any(word in lowered.split() for word in _FRENCH_KEYWORDS):
+
+    lowered = text.lower()
+    words = set(lowered.split())
+
+    # Darija before French (Darija may use romanized Arabic)
+    if words & _DARIJA_MARKERS:
+        return {"language_code": "aeb", "language_name": "Tunisian Darija"}
+    if words & _FRENCH_MARKERS:
         return {"language_code": "fr", "language_name": "French"}
-    if any(word in lowered.split() for word in _SPANISH_KEYWORDS):
-        return {"language_code": "es", "language_name": "Spanish"}
+
     return {"language_code": "en", "language_name": "English"}
 
+
 # ---------------------------------------------------------------------------
-# Industry extraction helper (used by tests via a private name)
+# Industry extraction — zero-cost
 # ---------------------------------------------------------------------------
-_INDUSTRY_KEYWORDS = {
-    "fintech": ["fintech", "payments", "financial technology"],
-    "saas": ["saas", "software as a service", "cloud platform"],
-    "healthcare": ["healthcare", "medical", "clinic", "hospital"],
-    "ecommerce": ["ecommerce", "online marketplace", "shopping"],
+
+_INDUSTRY_KEYWORDS: Dict[str, List[str]] = {
+    "fintech": ["fintech", "payments", "financial technology", "banking", "insurance"],
+    "saas": ["saas", "software as a service", "cloud platform", "subscription"],
+    "healthcare": ["healthcare", "medical", "clinic", "hospital", "pharma"],
+    "ecommerce": ["ecommerce", "e-commerce", "online store", "marketplace", "shopify"],
+    "retail": ["retail", "shop", "boutique", "clothing", "fashion", "clothes"],
+    "food": ["restaurant", "food", "cafe", "catering", "delivery"],
+    "real estate": ["real estate", "property", "construction", "housing"],
+    "education": ["education", "school", "training", "tutoring", "e-learning"],
+    "consulting": ["consulting", "consulting firm", "advisory", "freelance"],
 }
 
 def _extract_industry(text: str) -> str:
@@ -103,60 +103,21 @@ def _extract_industry(text: str) -> str:
             return industry
     return "General Business"
 
+
 # ---------------------------------------------------------------------------
-# Business request analysis – routes to specialist agents
+# Business request analysis — zero-cost heuristics, no API call
 # ---------------------------------------------------------------------------
-_STRATEGY_KEYWORDS = {"strategy", "strategic", "roadmap", "plan", "vision"}
-_INTELLIGENCE_KEYWORDS = {"research", "market", "competitor", "analysis", "insight"}
-_GROWTH_KEYWORDS = {"growth", "scale", "revenue", "kpi", "marketing", "sales"}
+
+_STRATEGY_KEYWORDS = {"strategy", "strategic", "roadmap", "plan", "vision", "mission", "swot"}
+_INTELLIGENCE_KEYWORDS = {"research", "market", "competitor", "analysis", "insight", "trend", "industry"}
+_GROWTH_KEYWORDS = {"growth", "scale", "revenue", "kpi", "marketing", "sales", "acquisition", "customer"}
 
 def analyze_business_request(text: str) -> dict:
-    """Analyze *text* using Gemini LLM to determine business intent.
-
-    The function returns a dictionary with:
-    - ``problem_statement`` (truncated to 500 characters)
-    - ``industry`` (derived via keyword heuristics as a fallback)
-    - ``language_code`` / ``language_name`` (from ``detect_language``)
-    - ``required_agents`` – a list of specialist agent identifiers required to
-      address the request.
-    """
-    # ---------------------------------------------------------------------
-    # Attempt Gemini‑based reasoning first
-    # ---------------------------------------------------------------------
-    try:
-        import google.generativeai as genai
-        from bizpilot.config.settings import settings
-        if not getattr(genai, "_configured", False):
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-            genai._configured = True
-        model_name = settings.DEFAULT_LLM_MODEL
-        model = genai.GenerativeModel(model_name)
-        prompt = (
-            "You are a business analyst assistant. Analyze the following request and "
-            "output a JSON object with the keys: 'problem_statement' (first 500 chars of "
-            "the request), 'industry' (a short industry name like 'fintech', 'saas', "
-            "'healthcare', 'ecommerce' or 'General Business'), 'required_agents' "
-            "(a list containing any of 'strategy_agent', 'intelligence_agent', "
-            "'growth_agent' based on the content). If the request does not explicitly "
-            "mention a particular area, include all three agents. Return ONLY the JSON.\n"
-            f"Request: '''{text}'''"
-        )
-        response = model.generate_content(prompt)
-        import json
-        result = json.loads(response.text)
-        if all(k in result for k in ["problem_statement", "industry", "required_agents"]):
-            lang = detect_language(text)
-            result["language_code"] = lang["language_code"]
-            result["language_name"] = lang["language_name"]
-            return result
-    except Exception as e:
-        logger.warning(f"Gemini business intent analysis failed ({e}); using heuristic fallback")
-    # ---------------------------------------------------------------------
-    # Heuristic fallback (same logic as previous implementation)
-    # ---------------------------------------------------------------------
+    """Analyze request using zero-cost heuristics. Never calls Gemini."""
     lang = detect_language(text)
     industry = _extract_industry(text)
     lowered = text.lower()
+
     required_agents: List[str] = []
     if any(kw in lowered for kw in _STRATEGY_KEYWORDS):
         required_agents.append("strategy_agent")
@@ -166,37 +127,64 @@ def analyze_business_request(text: str) -> dict:
         required_agents.append("growth_agent")
     if not required_agents:
         required_agents = ["strategy_agent", "intelligence_agent", "growth_agent"]
-    problem_statement = text[:500]
+
     return {
-        "problem_statement": problem_statement,
+        "problem_statement": text[:500],
         "industry": industry,
         "language_code": lang["language_code"],
         "language_name": lang["language_name"],
         "required_agents": required_agents,
     }
 
+
 # ---------------------------------------------------------------------------
-# Executive report compilation
+# compile_executive_report — used by ADK LlmAgent tool calling
 # ---------------------------------------------------------------------------
+
 def compile_executive_report(
     problem_statement: str,
     language_code: str,
-    strategy_output: str = "",
-    intelligence_output: str = "",
-    growth_output: str = "",
+    strategy_output: str = None,
+    intelligence_output: str = None,
+    growth_output: str = None,
 ) -> dict:
-    """Build a markdown executive report.
+    """Build a markdown executive report from pre-computed agent outputs.
 
-    The report always starts with a header (`# 📊 BizPilot`).  It then
-    includes the standard sections required by the test suite.  When a
-    particular output is empty, the section is omitted and a generic
-    placeholder is added at the end – the placeholder text includes the
-    phrase *"not available for this request"* so the unit test can locate
-    it.
+    If outputs are None, runs the corresponding specialist agent.
+    Returns {"report": markdown_string, "language_code": str}.
     """
+    from bizpilot.agents.strategy.agent import run_strategy
+    from bizpilot.agents.intelligence.agent import run_intelligence
+    from bizpilot.agents.growth.agent import run_growth
+
+    payload = {"problem_statement": problem_statement, "language_code": language_code}
+
+    if strategy_output is None:
+        try:
+            rep = run_strategy(payload)
+            strategy_output = _format_strategy_report(rep)
+        except Exception as e:
+            logger.error(f"Strategy agent failed: {e}")
+            strategy_output = ""
+
+    if intelligence_output is None:
+        try:
+            rep = run_intelligence(payload)
+            intelligence_output = _format_intelligence_report(rep)
+        except Exception as e:
+            logger.error(f"Intelligence agent failed: {e}")
+            intelligence_output = ""
+
+    if growth_output is None:
+        try:
+            rep = run_growth(payload)
+            growth_output = _format_growth_report(rep)
+        except Exception as e:
+            logger.error(f"Growth agent failed: {e}")
+            growth_output = ""
+
     sections: List[str] = []
-    # Header – include RTL marker for Arabic languages
-    header = "# 📊 BizPilot"
+    header = "# 📊 BizPilot Executive Report"
     if language_code == "ar":
         header += " (RTL)"
     sections.append(header)
@@ -216,103 +204,199 @@ def compile_executive_report(
     sections.append("## Success Metrics")
     sections.append("- Define KPIs and measurement cadence.")
 
-    if not any([strategy_output, intelligence_output, growth_output]):
-        sections.append("(not available for this request)")
-
     report = "\n\n".join(sections)
     return {"report": report, "language_code": language_code}
 
+
 # ---------------------------------------------------------------------------
-# Orchestration entry point (unchanged except for imports above)
+# Report formatters
 # ---------------------------------------------------------------------------
+
+def _format_strategy_report(rep) -> str:
+    from bizpilot.schemas import StrategyReport
+    if not rep:
+        return ""
+    if isinstance(rep, str):
+        return rep
+    if isinstance(rep, dict):
+        try:
+            rep = StrategyReport.parse_obj(rep)
+        except Exception:
+            return str(rep)
+    if isinstance(rep, StrategyReport):
+        lines = []
+        if rep.swot_analysis:
+            lines.append("### SWOT Analysis")
+            for cat, items in rep.swot_analysis.items():
+                lines.append(f"- **{cat}**:")
+                for item in items:
+                    lines.append(f"  - {item}")
+        if rep.strategic_recommendations:
+            lines.append("### Strategic Recommendations")
+            for rec in rep.strategic_recommendations:
+                lines.append(f"- {rec}")
+        if rep.business_priorities:
+            lines.append("### Business Priorities")
+            for p in rep.business_priorities:
+                lines.append(f"- {p}")
+        if rep.risks:
+            lines.append("### Identified Risks")
+            for r in rep.risks:
+                lines.append(f"- {r}")
+        if rep.roadmap:
+            lines.append("### Roadmap")
+            for phase in rep.roadmap:
+                lines.append(f"- {phase}")
+        return "\n".join(lines)
+    return str(rep)
+
+
+def _format_intelligence_report(rep) -> str:
+    from bizpilot.schemas import IntelligenceReport
+    if not rep:
+        return ""
+    if isinstance(rep, str):
+        return rep
+    if isinstance(rep, dict):
+        try:
+            rep = IntelligenceReport.parse_obj(rep)
+        except Exception:
+            return str(rep)
+    if isinstance(rep, IntelligenceReport):
+        return "\n\n".join([
+            f"### Market Analysis\n{rep.market_analysis}",
+            f"### Competitor Analysis\n{rep.competitor_analysis}",
+            f"### Customer Insights\n{rep.customer_insights}",
+            f"### Industry Opportunities\n{rep.industry_opportunities}",
+            f"### Threat Assessment\n{rep.threat_assessment}",
+        ])
+    return str(rep)
+
+
+def _format_growth_report(rep) -> str:
+    from bizpilot.schemas import GrowthReport
+    if not rep:
+        return ""
+    if isinstance(rep, str):
+        return rep
+    if isinstance(rep, dict):
+        try:
+            rep = GrowthReport.parse_obj(rep)
+        except Exception:
+            return str(rep)
+    if isinstance(rep, GrowthReport):
+        lines = [
+            f"### Marketing Strategy\n{rep.marketing_strategy}",
+            f"### Sales Optimization\n{rep.sales_optimization}",
+            f"### Customer Acquisition\n{rep.customer_acquisition}",
+            f"### Content Recommendations\n{rep.content_recommendations}",
+        ]
+        if rep.kpi_suggestions:
+            lines.append("### KPI Suggestions")
+            lines.extend(f"- {k}" for k in rep.kpi_suggestions)
+        return "\n\n".join(lines)
+    return str(rep)
+
+
+# ---------------------------------------------------------------------------
+# MAIN ORCHESTRATION — Single Gemini call for the entire analysis
+# ---------------------------------------------------------------------------
+
+def _load_system_prompt() -> str:
+    """Load the BizPilot consultant system prompt."""
+    p = pathlib.Path(__file__).parent / "prompt.md"
+    if p.exists():
+        return p.read_text(encoding="utf-8")
+    return "You are BizPilot, an expert AI Business Consultant."
+
 
 def orchestrate(user_message: str) -> Dict[str, Any]:
-    """Orchestrates the full BizPilot workflow.
-
-    Steps:
-    1. Validate API key.
-    2. Detect language and analyse the request.
-    3. Build ``BusinessRequest`` and ``ExecutionPlan``.
-    4. Invoke the required specialist agents.
-    5. Compile an ``ExecutiveReport`` and return it as a plain‑dict.
     """
-    # 1. API key validation
+    Orchestrate a full business analysis using a SINGLE Gemini call.
+
+    Architecture change: Instead of 5 separate Gemini calls
+    (language, analysis, strategy, intelligence, growth), we now use
+    ONE call that generates the complete report. This reduces quota
+    consumption by 80% and eliminates quota exhaustion on free tiers.
+
+    Returns dict with keys: summary, language_code, sections
+    (compatible with ExecutiveReport schema).
+    """
     validate_api_key()
 
-    # 2. Language detection & request analysis
-    language_info = detect_language(user_message)
-    analysis = analyze_business_request(user_message)
+    # Zero-cost pre-processing
+    lang_info = detect_language(user_message)
+    language_code = lang_info["language_code"]
+    language_name = lang_info["language_name"]
+    industry = _extract_industry(user_message)
 
-    # 3. Build BusinessRequest
-    business_req = BusinessRequest(
-        problem_statement=analysis["problem_statement"],
-        industry=analysis["industry"],
-        language_code=language_info["language_code"],
-        language_name=language_info["language_name"],
-    )
+    system_prompt = _load_system_prompt()
 
-    # 4. Execution plan
-    exec_plan = ExecutionPlan(required_agents=analysis["required_agents"], parameters={})
+    # Build a rich prompt that instructs Gemini to produce the full report
+    analysis_prompt = f"""The user has requested a comprehensive business analysis.
 
-    # 5. Run specialist agents
-    strategy_output = None
-    intelligence_output = None
-    growth_output = None
-    if "strategy_agent" in exec_plan.required_agents:
-        logger.info("Invoking Strategy agent")
-        strategy_output = run_strategy(business_req.dict())
-    if "intelligence_agent" in exec_plan.required_agents:
-        logger.info("Invoking Intelligence agent")
-        intelligence_output = run_intelligence(business_req.dict())
-    if "growth_agent" in exec_plan.required_agents:
-        logger.info("Invoking Growth agent")
-        growth_output = run_growth(business_req.dict())
+User message: \"\"\"{user_message}\"\"\"
 
-    # 6. Compile report
-    report_dict = compile_executive_report(
-        problem_statement=business_req.problem_statement,
-        language_code=business_req.language_code,
-        strategy_output=json.dumps(strategy_output.dict()) if strategy_output else "",
-        intelligence_output=json.dumps(intelligence_output.dict()) if intelligence_output else "",
-        growth_output=json.dumps(growth_output.dict()) if growth_output else "",
-    )
+Detected language: {language_name} (code: {language_code})
+Detected industry: {industry}
 
-    executive_report = ExecutiveReport(
-        summary=report_dict.get("report", ""),
-        language_code=report_dict.get("language_code", business_req.language_code),
-        sections={
-            "strategy": json.dumps(strategy_output.dict()) if strategy_output else "",
-            "intelligence": json.dumps(intelligence_output.dict()) if intelligence_output else "",
-            "growth": json.dumps(growth_output.dict()) if growth_output else "",
-        },
-    )
+Please generate a complete, personalized Executive Business Report in {language_name}.
 
-    return executive_report.dict()
+Include these sections (only if relevant information exists):
+1. Executive Summary — Summarize the business situation
+2. SWOT Analysis — Strengths, Weaknesses, Opportunities, Threats
+3. Strategic Recommendations — Concrete action steps
+4. Market Intelligence — Market context, competitors, opportunities
+5. Growth & Action Plan — Marketing, sales, customer acquisition
+6. KPIs — Key metrics to track
+7. 90-Day Roadmap — Prioritized milestones
+
+CRITICAL RULES:
+- Base EVERYTHING on the user's actual message. Do NOT invent facts.
+- If information is missing, clearly state what additional info is needed.
+- Never invent revenue, ARR, number of employees, competitors, or market size.
+- Reply entirely in {language_name}.
+- Format as clean Markdown with headers.
+"""
+
+    try:
+        from bizpilot.utils import get_gemini_client
+        from bizpilot.config.settings import settings
+        from google.genai import types
+
+        client = get_gemini_client()
+        response = client.models.generate_content(
+            model=settings.DEFAULT_LLM_MODEL,
+            contents=analysis_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.7,
+            ),
+        )
+        report_text = response.text or ""
+    except Exception as e:
+        logger.error(f"Orchestration Gemini call failed: {e}")
+        report_text = (
+            "I'm sorry, I couldn't generate a response at the moment. "
+            "Please try again in a few seconds."
+        )
+
+    return {
+        "summary": report_text,
+        "language_code": language_code,
+        "sections": {"report": report_text},
+    }
+
 
 # ---------------------------------------------------------------------------
-# MCP Server interface stub (future integration)
+# MCP Server interface stub
 # ---------------------------------------------------------------------------
 class MCPServerInterface(ABC):
-    """Abstract base class for a future MCP server.
-
-    Concrete implementations will provide methods for registering agents,
-    handling inbound requests and managing state.  The interface is kept
-    minimal for now to satisfy architectural requirements without adding
-    runtime behaviour.
-    """
-
     @abstractmethod
-    def start(self) -> None:
-        """Start the MCP server – blocking call."""
-
+    def start(self) -> None: ...
     @abstractmethod
-    def stop(self) -> None:
-        """Stop the MCP server gracefully."""
-
+    def stop(self) -> None: ...
     @abstractmethod
-    def register_agent(self, name: str, agent: Any) -> None:
-        """Register an agent implementation under *name* for later lookup."""
-
+    def register_agent(self, name: str, agent: Any) -> None: ...
     @abstractmethod
-    def dispatch(self, request: Any) -> Any:
-        """Dispatch *request* to the appropriate registered agent and return the response."""
+    def dispatch(self, request: Any) -> Any: ...

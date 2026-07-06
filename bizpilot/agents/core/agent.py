@@ -31,7 +31,6 @@ from bizpilot.agents.core.tools import (
     detect_language,
     analyze_business_request,
     compile_executive_report,
-    orchestrate,
 )
 from bizpilot.config.settings import settings
 
@@ -55,12 +54,11 @@ def _load_prompt() -> str:
 # Tool registration
 # ---------------------------------------------------------------------------
 
-_CORE_TOOLS: list[FunctionTool] = [
+_CORE_TOOLS = [
     FunctionTool(detect_language),
     FunctionTool(analyze_business_request),
     FunctionTool(compile_executive_report),
 ]
-
 # ---------------------------------------------------------------------------
 # Core Orchestrator Agent Definition
 # ---------------------------------------------------------------------------

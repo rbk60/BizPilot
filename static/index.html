@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BizPilot — Executive Intelligence</title>
+    <!-- Use Inter font for a modern, sleek look -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Marked.js for rendering Markdown -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="background-blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+
+    <main class="container glass-panel">
+        <header class="header">
+            <div class="logo">
+                <span class="icon">📊</span>
+                <h1>BizPilot <span class="badge">PRO</span></h1>
+            </div>
+            <p class="subtitle">AI-Powered Business Operations & Strategy</p>
+        </header>
+
+        <section class="chat-interface">
+            <div id="chat-output" class="chat-output">
+                <div class="message system-message">
+                    <p>👋 Hello! I'm <strong>BizPilot</strong>, your AI Business Consultant.<br>Ask me anything — strategy, marketing, pricing, SWOT, growth, and more.<br><em>I speak English, French, Arabic, and Darija.</em></p>
+                </div>
+            </div>
+            
+            <div class="input-area">
+                <textarea id="user-input" placeholder="Ask me anything about your business…"></textarea>
+                <button id="send-btn" class="primary-btn">
+                    <span class="btn-text">Send</span>
+                    <span class="btn-icon">🚀</span>
+                </button>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
